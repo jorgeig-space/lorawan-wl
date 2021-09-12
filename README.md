@@ -6,6 +6,7 @@ If you are using other boards, modify `rfswitch` accordingly to reflect your con
 
 **WIP** This is not a working implementation (yet)!
 
+Thanks to [newAM](https://github.com/newAM), [ivajloip](https://github.com/ivajloip), and all the contributors of [stm32wl-hal](https://github.com/newAM/stm32wl-hal), [rust-lorawan](https://github.com/ivajloip/rust-lorawan) and the Rust embedded community. This wouldn't be possible without them.
 
 ## Problems
 
