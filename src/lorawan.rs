@@ -1,7 +1,6 @@
 use core::convert::TryInto;
 
-use heapless::Vec;
-use lorawan_device::{Timings, radio::{self, Bandwidth as LoraBandwidth, CodingRate as LoraCodingRate, Error as LoraError, Event as LoraEvent, PhyRxTx, Response as LoraResponse, RxQuality, SpreadingFactor as LoraSpreadingFactor}};
+use lorawan_device::{Timings, radio::{Bandwidth as LoraBandwidth, CodingRate as LoraCodingRate, Error as LoraError, Event as LoraEvent, PhyRxTx, Response as LoraResponse, RxQuality, SpreadingFactor as LoraSpreadingFactor}};
 use stm32wl_hal::{spi::{SgMiso, SgMosi}, subghz::*};
 
 use crate::rfswitch::RfSwitch;
@@ -100,20 +99,20 @@ impl LorawanRadio {
             LoraEvent::TxRequest(config, buf) => {
                 defmt::info!("LoraEvent::TxRequest: {:X}", buf);
                 defmt::info!("config: {}, power: {}", config.rf, config.pw);
+
                 radio_config(&mut self.subghz, self.high_power);
                 let result = {
-                    // We have checked the frequency at creation time so we can unwrap safely
                     self.subghz.set_rf_frequency(&RfFreq::from_frequency(config.rf.frequency)).unwrap();
                     let mut status = self.subghz.status().unwrap().cmd();
                     defmt::debug!("set rf freq cmd status: {}", status);
                     
                     self.subghz.set_lora_packet_params(
                         &LoRaPacketParams::new()
-                        .set_crc_en(true)
-                        .set_header_type(HeaderType::Variable)
                         .set_preamble_len(8)
-                        .set_invert_iq(false)
+                        .set_header_type(HeaderType::Variable)
                         .set_payload_len(buf.len() as u8)
+                        .set_crc_en(true)
+                        .set_invert_iq(false)
                     ).unwrap();
                     status = self.subghz.status().unwrap().cmd();
                     defmt::debug!("set lora pkt params status: {}", status);
@@ -123,7 +122,7 @@ impl LorawanRadio {
                         .set_sf(sf_transform(config.rf.spreading_factor))
                         .set_cr(cr_transform(config.rf.coding_rate))
                         .set_bw(bw_transform(config.rf.bandwidth))
-                        .set_ldro_en(false))
+                        .set_ldro_en(true))
                 };
                 let mut status = self.subghz.status().unwrap().cmd();
                 defmt::debug!("set lora mod params status: {}", status);
@@ -144,6 +143,7 @@ impl LorawanRadio {
                             .irq_enable_all(Irq::TxDone)
                             .irq_enable_all(Irq::Timeout);
                         self.subghz.set_irq_cfg(&IRQ_CFG).unwrap();
+                        self.subghz.set_buffer_base_address(0,0).unwrap();
                         self.subghz.write_buffer(0, buf).unwrap();
                         status = self.subghz.status().unwrap().cmd();
                         defmt::debug!("write buffer cmd status: {}", status);
@@ -159,7 +159,7 @@ impl LorawanRadio {
                 }
             },
             LoraEvent::RxRequest(config) => {
-                defmt::info!("RxRequest: f: {}, bw: {}, sf: {}, cr: {}", config.frequency, config.bandwidth, config.spreading_factor, config.coding_rate);
+                defmt::info!("RxRequest: {}", config);
                 let result = ( move || {
                     // We have checked the frequency at creation time so we can unwrap safely
                     self.subghz.set_rf_frequency(&RfFreq::from_frequency(config.frequency))?;
@@ -201,7 +201,7 @@ impl LorawanRadio {
     ) -> (State, Result<LoraResponse<Self>, LoraError<Self>>) {
         match event {
             LoraEvent::PhyEvent(phyevent) => match phyevent {
-                Event::Irq(status, irq_status) => {
+                Event::Irq(_status, irq_status) => {
                     self.subghz.set_standby(StandbyClk::Rc).unwrap();
                     if irq_status & Irq::TxDone.mask() != 0 {
                         (State::Idle, Ok(LoraResponse::TxDone(0)))
@@ -222,15 +222,15 @@ impl LorawanRadio {
     ) -> (State, Result<LoraResponse<Self>, LoraError<Self>>) {
         match event {
             LoraEvent::PhyEvent(phyevent) => match phyevent {
-                Event::Irq(status, irq_status) => {
+                Event::Irq(_status, irq_status) => {
                     self.subghz.set_standby(StandbyClk::Rc).unwrap();
                     if (irq_status & Irq::RxDone.mask()) != 0 {
-                        let (rx_status, rx_len, rx_ptr) = self.subghz.rx_buffer_status().unwrap();
+                        let (_rx_status, rx_len, _rx_ptr) = self.subghz.rx_buffer_status().unwrap();
                         let pkt_status = self.subghz.lora_packet_status().unwrap();
                         let rssi = pkt_status.rssi_pkt().to_integer();
                         let snr = pkt_status.snr_pkt().to_integer().try_into().unwrap_or(127);
                         let slice_buf = unsafe { core::slice::from_raw_parts_mut(self.buffer_rx.as_mut_ptr(), rx_len as usize) };
-                        self.subghz.read_buffer(0, slice_buf);
+                        self.subghz.read_buffer(0, slice_buf).unwrap();
                         self.subghz.set_standby(StandbyClk::Rc).unwrap();
                         // TODO Put radio to sleep?
                         (
@@ -263,7 +263,7 @@ impl PhyRxTx for LorawanRadio {
     type PhyError = Error;
 
     fn get_received_packet(&mut self) -> &mut [u8] {
-        let (status, len, sg_ptr) = self.subghz.rx_buffer_status().unwrap();
+        let (_status, len, _sg_ptr) = self.subghz.rx_buffer_status().unwrap();
         
         &mut self.buffer_rx[..(len as usize)]
     }
@@ -297,35 +297,46 @@ impl Timings for LorawanRadio {
 
 fn radio_config(subghz: &mut SubGhz<SgMiso, SgMosi>, high_power: bool) {
     subghz.set_standby(StandbyClk::Rc).unwrap();
-        subghz.set_tcxo_mode(&TcxoMode::new()
-            .set_txco_trim(TcxoTrim::Volts1pt7)
-            .set_timeout(Timeout::from_millis_sat(10))).unwrap();
-        subghz.set_regulator_mode(RegMode::Ldo).unwrap();
-        subghz.set_buffer_base_address(0,0).unwrap();
-        if high_power {
+    
+    subghz.set_tcxo_mode(&TcxoMode::new()
+        .set_txco_trim(TcxoTrim::Volts1pt7)
+        .set_timeout(Timeout::from_millis_sat(100))).unwrap();
+    subghz.set_regulator_mode(RegMode::Smps).unwrap();
+
+    subghz.calibrate(0x7F).unwrap();
+
+    while rfbusys() {}
+
+    subghz.calibrate_image(CalibrateImage::ISM_430_440).unwrap();
+
+    subghz.set_buffer_base_address(0,0).unwrap();
+    
+    if high_power {
         subghz.set_pa_config(&PaConfig::new()
             .set_pa_duty_cycle(0x2)
             .set_hp_max(0x2)
             .set_pa(PaSel::Hp)).unwrap();
-        } else {
-            subghz.set_pa_config(&PaConfig::new()
+    } else {
+        subghz.set_pa_config(&PaConfig::new()
             .set_pa_duty_cycle(0x1)
             .set_hp_max(0x0)
             .set_pa(PaSel::Lp)).unwrap();
-        }
-        subghz.set_pa_ocp(Ocp::Max60m).unwrap();
-        if high_power {
-            subghz.set_tx_params(&TxParams::new()
-                .set_ramp_time(RampTime::Micros40)
-                .set_power(0x16)).unwrap();   
-        } else {
-            subghz.set_tx_params(&TxParams::new()
-                .set_ramp_time(RampTime::Micros40)
-                .set_power(0x0D)).unwrap(); 
-        }
-        subghz.set_lora_sync_word(LoRaSyncWord::Private).unwrap();
-        subghz.calibrate_image(CalibrateImage::ISM_430_440).unwrap();
-        subghz.set_packet_type(PacketType::LoRa).unwrap();
+    }
+
+    subghz.set_pa_ocp(Ocp::Max140m).unwrap();
+    if high_power {
+        subghz.set_tx_params(&TxParams::new()
+            .set_ramp_time(RampTime::Micros40)
+            .set_power(0x16)).unwrap();   
+    } else {
+        subghz.set_tx_params(&TxParams::new()
+            .set_ramp_time(RampTime::Micros40)
+            .set_power(0x0D)).unwrap(); 
+    }
+    subghz.set_packet_type(PacketType::LoRa).unwrap();
+    // Public means **any** LoRaWAN network
+    // The distinction between public/private lorawan networks is not done through the SyncWord
+    subghz.set_lora_sync_word(LoRaSyncWord::Public).unwrap();
 }
 
 fn sf_transform(item: LoraSpreadingFactor) -> SpreadingFactor {
@@ -355,3 +366,34 @@ fn bw_transform(item: LoraBandwidth) -> LoRaBandwidth {
         LoraBandwidth::_500KHz => LoRaBandwidth::Bw500,
     }
 }
+
+/*
+static void ComputeRxWindowParameters( void )
+{
+    // Compute Rx1 windows parameters
+    RegionComputeRxWindowParameters( MacCtx.NvmCtx->Region,
+                                     RegionApplyDrOffset( MacCtx.NvmCtx->Region,
+                                                          MacCtx.NvmCtx->MacParams.DownlinkDwellTime,
+                                                          MacCtx.NvmCtx->MacParams.ChannelsDatarate,
+                                                          MacCtx.NvmCtx->MacParams.Rx1DrOffset ),
+                                     MacCtx.NvmCtx->MacParams.MinRxSymbols,
+                                     MacCtx.NvmCtx->MacParams.SystemMaxRxError,
+                                     &MacCtx.RxWindow1Config );
+    // Compute Rx2 windows parameters
+    RegionComputeRxWindowParameters( MacCtx.NvmCtx->Region,
+                                     MacCtx.NvmCtx->MacParams.Rx2Channel.Datarate,
+                                     MacCtx.NvmCtx->MacParams.MinRxSymbols,
+                                     MacCtx.NvmCtx->MacParams.SystemMaxRxError,
+                                     &MacCtx.RxWindow2Config );
+
+    // Default setup, in case the device joined
+    MacCtx.RxWindow1Delay = MacCtx.NvmCtx->MacParams.ReceiveDelay1 + MacCtx.RxWindow1Config.WindowOffset;
+    MacCtx.RxWindow2Delay = MacCtx.NvmCtx->MacParams.ReceiveDelay2 + MacCtx.RxWindow2Config.WindowOffset;
+
+    if( MacCtx.NvmCtx->NetworkActivation == ACTIVATION_TYPE_NONE )
+    {
+        MacCtx.RxWindow1Delay = MacCtx.NvmCtx->MacParams.JoinAcceptDelay1 + MacCtx.RxWindow1Config.WindowOffset;
+        MacCtx.RxWindow2Delay = MacCtx.NvmCtx->MacParams.JoinAcceptDelay2 + MacCtx.RxWindow2Config.WindowOffset;
+    }
+}
+*/

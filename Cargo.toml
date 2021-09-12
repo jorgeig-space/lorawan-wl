@@ -18,17 +18,17 @@ panic-probe = { version = "~0.2.0", features = ["print-defmt"] }
 
 [dependencies.stm32wl-hal]
 git = "https://github.com/munin-space/stm32wl-hal.git"
-rev = "74af1f82d22546c58384d3294028cb2c0da2e182"
+branch = "public"
 features = ["rt", "stm32wl5x_cm4", "defmt"]
 
 [dependencies.lorawan-device]
 git = "https://github.com/munin-space/rust-lorawan.git"
-rev = "afa8b93bc1339c89d4892fccf7e8bdb6c3e8b7a4"
+branch = "public"
 features = ["withdefmt"]
 
 [dependencies.lorawan-encoding]
 git = "https://github.com/munin-space/rust-lorawan.git"
-rev = "afa8b93bc1339c89d4892fccf7e8bdb6c3e8b7a4"
+branch = "public"
 default-features = false
 
 [features]

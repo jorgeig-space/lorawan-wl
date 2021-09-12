@@ -83,7 +83,7 @@ const APP: () = {
         let mut lptim: LpTim1 = LpTim1::new(dp.LPTIM1, hal::lptim::Clk::Lsi, hal::lptim::Prescaler::Div32, &mut dp.RCC);
         lptim.set_ier(hal::lptim::irq::CMPM);
 
-        let rng = Rng::new(dp.RNG, hal::rng::Clk::MSI, &mut dp.RCC);
+        let _rng = Rng::new(dp.RNG, hal::rng::Clk::MSI, &mut dp.RCC);
 
         ctx.spawn
             .lorawan_event(LorawanEvent::NewSessionRequest)
@@ -94,7 +94,7 @@ const APP: () = {
             lorawan: Some(LorawanDevice::new(
                 Configuration::new(Region::EU433),
                 lora_sg,
-                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFd], 
+                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xF4], 
                 [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01], 
                 [0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2,
                 0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2],
@@ -129,7 +129,7 @@ const APP: () = {
                         let event = phy as &lorawan::Event;
                         match event {
                             lorawan::Event::Irq(status, irq_status) => {
-                                defmt::info!("Radio Rx/Tx Interrupt: {}", irq_status);
+                                defmt::info!("Radio Rx/Tx Interrupt: {} {}", status, irq_status);
                             }
                         }
                     }
@@ -151,14 +151,14 @@ const APP: () = {
 
     #[task(priority = 2, resources = [lorawan], spawn = [lorawan_event, set_timer])]
     fn lorawan_response(
-        mut ctx: lorawan_response::Context,
+        ctx: lorawan_response::Context,
         response: Result<LorawanResponse, LorawanError<LorawanRadio>>,
     ) {
         match response {
             Ok(response) => match response {
                 LorawanResponse::TimeoutRequest(ms) => {
                     defmt::info!("TimeoutRequest: {}", ms);
-                    ctx.spawn.set_timer(u16::try_from(ms).unwrap());
+                    ctx.spawn.set_timer(u16::try_from(ms).unwrap()).unwrap();
                 }
                 LorawanResponse::JoinSuccess => {
                     if let Some(lorawan) = ctx.resources.lorawan.take() {
@@ -178,9 +178,9 @@ const APP: () = {
                             use lorawan_encoding::parser::{DataHeader, FRMPayload};
 
                             if let Ok(FRMPayload::Data(data)) = downlink.frm_payload() {
-                                //defmt::info!("Downlink received (FCntDown={} FRM: {})", fcnt_down, data);
+                                defmt::info!("Downlink received (FCntDown={} FRM: {})", fcnt_down, data);
                             } else {
-                                //defmt::info!("Downlink received (FcntDown={})", fcnt_down);
+                                defmt::info!("Downlink received (FcntDown={})", fcnt_down);
                             }
 
                             let mut mac_commands_len = 0;
@@ -188,8 +188,7 @@ const APP: () = {
                                 if mac_commands_len == 0 {
                                     defmt::info!("FOpts: ");
                                 }
-                                // TODO implement fmt for lorawan-encoding structs
-                                defmt::info!("MAC Command");
+                                defmt::info!("MAC Command: {}", mac_command);
                                 mac_commands_len += 1;
                             }
                         }
@@ -223,7 +222,7 @@ const APP: () = {
             },
             Err(err) => match err {
                 LorawanError::Radio(_) => defmt::info!("Error Radio "),
-                LorawanError::Session(e) => defmt::info!("Error Session"),
+                LorawanError::Session(_) => defmt::info!("Error Session"),
                 LorawanError::NoSession(_) => defmt::info!("Error NoSession"),
             },
         }
@@ -254,9 +253,9 @@ const APP: () = {
     fn radio_irq(ctx: radio_irq::Context) {
         let mut subghz = unsafe { hal::subghz::SubGhz::steal() };
         let (status, irq_status) = subghz.irq_status().unwrap();
-        subghz.clear_irq_status(irq_status);
+        subghz.clear_irq_status(irq_status).unwrap();
         //defmt::debug!("Radio IRQ: {}", irq_status);
-        ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status))));
+        ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status)))).unwrap();
     }
 
     extern "C" {
