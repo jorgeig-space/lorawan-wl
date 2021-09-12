@@ -20,6 +20,7 @@ pub struct LorawanRadio {
     subghz: SubGhz<SgMiso, SgMosi>,
     state: State,
     buffer_rx: [u8; 256],
+    buffer_len: u8,
     rfs: RfSwitch,
     high_power: bool,
 }
@@ -73,6 +74,7 @@ impl LorawanRadio {
             subghz,
             state: State::Idle,
             buffer_rx: [0; 256],
+            buffer_len: 0,
             rfs,
             high_power,
         }
@@ -161,6 +163,7 @@ impl LorawanRadio {
             LoraEvent::RxRequest(config) => {
                 defmt::info!("RxRequest: {}", config);
                 let result = ( move || {
+                    radio_config(&mut self.subghz, self.high_power);
                     // We have checked the frequency at creation time so we can unwrap safely
                     self.subghz.set_rf_frequency(&RfFreq::from_frequency(config.frequency))?;
 
@@ -222,16 +225,15 @@ impl LorawanRadio {
     ) -> (State, Result<LoraResponse<Self>, LoraError<Self>>) {
         match event {
             LoraEvent::PhyEvent(phyevent) => match phyevent {
-                Event::Irq(_status, irq_status) => {
-                    self.subghz.set_standby(StandbyClk::Rc).unwrap();
+                Event::Irq(status, irq_status) => {
+                    assert_eq!(status.mode().unwrap(), StatusMode::StandbyRc);
                     if (irq_status & Irq::RxDone.mask()) != 0 {
                         let (_rx_status, rx_len, _rx_ptr) = self.subghz.rx_buffer_status().unwrap();
                         let pkt_status = self.subghz.lora_packet_status().unwrap();
                         let rssi = pkt_status.rssi_pkt().to_integer();
                         let snr = pkt_status.snr_pkt().to_integer().try_into().unwrap_or(127);
-                        let slice_buf = unsafe { core::slice::from_raw_parts_mut(self.buffer_rx.as_mut_ptr(), rx_len as usize) };
-                        self.subghz.read_buffer(0, slice_buf).unwrap();
-                        self.subghz.set_standby(StandbyClk::Rc).unwrap();
+                        self.subghz.read_buffer(0, &mut self.buffer_rx[..(rx_len as usize)]).unwrap();
+                        self.buffer_len = rx_len;
                         // TODO Put radio to sleep?
                         (
                             State::Idle,
@@ -263,9 +265,7 @@ impl PhyRxTx for LorawanRadio {
     type PhyError = Error;
 
     fn get_received_packet(&mut self) -> &mut [u8] {
-        let (_status, len, _sg_ptr) = self.subghz.rx_buffer_status().unwrap();
-        
-        &mut self.buffer_rx[..(len as usize)]
+        &mut self.buffer_rx[..(self.buffer_len as usize)]
     }
 
     fn get_mut_radio(&mut self) -> &mut Self {
