@@ -1,42 +1,51 @@
-use aes::Aes128;
-use aes::cipher::{
-    BlockEncrypt, BlockDecrypt, NewBlockCipher,
-    generic_array::GenericArray,
-    generic_array::typenum::*,
-};
+use core::convert::TryInto;
 
-use lorawan_encoding::keys::{AES128, CryptoFactory, Decrypter, Encrypter, Mac as LoraMac};
-use cmac::{Cmac, NewMac, Mac};
+use stm32wl_hal::aes::Aes;
+
+use cipher::{ BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher };
+use generic_array::{ GenericArray, typenum::* };
+use lorawan_encoding::keys::{ AES128, CryptoFactory, Decrypter, Encrypter, Mac as LoraMac };
+use cmac::{ Cmac, NewMac, Mac };
 
 pub struct EncrypterDecrypter {
-    cipher: Aes128,
+    aes: Aes,
+    key: [u32; 4],
 }
 
 impl EncrypterDecrypter {
     pub fn new(key: &[u8; 16]) -> EncrypterDecrypter {
-        EncrypterDecrypter { cipher:  Aes128::new_from_slice(key).unwrap(), }
+        let aes = unsafe { Aes::steal() };
+        let key_u32: [u32; 4] = [
+            u32::from_be_bytes(key[0..4].try_into().unwrap()),
+            u32::from_be_bytes(key[8..16].try_into().unwrap()),
+            u32::from_be_bytes(key[16..24].try_into().unwrap()),
+            u32::from_be_bytes(key[24..].try_into().unwrap()),
+        ];
+        EncrypterDecrypter { aes, key: key_u32 }
     }
 }
 
 impl Encrypter for EncrypterDecrypter {
     fn encrypt_block(&self, block: &mut GenericArray<u8, U16>) {
-        self.cipher.encrypt_block(block)
+        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
+        self.aes.encrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
     }
 }
 
 impl Decrypter for EncrypterDecrypter {
     fn decrypt_block(&self, block: &mut GenericArray<u8, U16>) {
-        self.cipher.decrypt_block(block)
+        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
+        self.aes.decrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
     }
 }
 
 pub struct CmacWl {
-    cmac: Cmac<Aes128>,
+    cmac: Cmac<AesWl>,
 }
 
 impl CmacWl {
     pub fn new(key: &[u8; 16]) -> CmacWl {
-        let cmac = Cmac::<Aes128>::new_from_slice(key).unwrap();
+        let cmac = Cmac::<AesWl>::new_from_slice(key).unwrap();
         CmacWl {cmac}
     }
 }
@@ -52,6 +61,57 @@ impl LoraMac for CmacWl {
 
     fn result(self) -> GenericArray<u8, U16> {
         self.cmac.finalize().into_bytes()
+    }
+}
+
+pub struct AesWl {
+    aes: Aes,
+    key: [u32; 4],
+}
+
+impl BlockCipher for AesWl {
+    type BlockSize = U16;
+    type ParBlocks = U0;
+}
+
+impl BlockEncrypt for AesWl {
+    fn encrypt_block(&self, block: &mut cipher::Block<Self>) {
+        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
+        self.aes.encrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+    }
+}
+
+impl BlockDecrypt for AesWl {
+    fn decrypt_block(&self, block: &mut cipher::Block<Self>) {
+        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
+        self.aes.decrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+    }
+}
+
+impl Clone for AesWl {
+    /// While the implementation is necessary for Cmac because of the crypto traits,
+    /// it is not used within the implementation. The Clone boundary is removed in the next
+    /// version of the crypto traits.
+    fn clone(&self) -> Self {
+        Self {
+            aes: unsafe { Aes::steal() },
+            key: self.key.clone(),
+        }
+    }
+}
+
+impl NewBlockCipher for AesWl {
+    type KeySize = U16;
+
+    fn new(key: &GenericArray<u8, U16>) -> Self {
+        let aes = unsafe { Aes::steal() };
+        let key_u32: [u32; 4] = [
+            u32::from_be_bytes(key[0..4].try_into().unwrap()),
+            u32::from_be_bytes(key[8..16].try_into().unwrap()),
+            u32::from_be_bytes(key[16..24].try_into().unwrap()),
+            u32::from_be_bytes(key[24..].try_into().unwrap()),
+        ];
+        AesWl { aes, key: key_u32 }
     }
 }
 

@@ -6,19 +6,17 @@ author = "Jorge Iglesias <jorge@munin.space>"
 
 [dependencies]
 cortex-m-rtic = { version = "0.5.8", default-features = false, features = ["cortex-m-7"] }
-dbl = "0.3"
-aes = "0.7.5"
+cipher = "0.3.0"
 cmac = "*"
 defmt = "0.2.0"
 defmt-rtt = "0.2.0"
 defmt-test = "~0.2.0"
-heapless = "0.7"
 generic-array = "0.14.4"
 panic-probe = { version = "~0.2.0", features = ["print-defmt"] }
 
 [dependencies.stm32wl-hal]
 git = "https://github.com/munin-space/stm32wl-hal.git"
-branch = "public"
+branch = "improvement/remove_muts_aes"
 features = ["rt", "stm32wl5x_cm4", "defmt"]
 
 [dependencies.lorawan-device]

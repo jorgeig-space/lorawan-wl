@@ -12,6 +12,7 @@ use panic_probe as _;
 use core::convert::TryFrom;
 
 use hal::{
+    aes::Aes,
     cortex_m::prelude::_embedded_hal_timer_CountDown,
     gpio::{PortA, PortC, RfNssDbg, SgMisoDbg, SgMosiDbg, SgSckDbg}, 
     lptim::{LpTim, LpTim1}, 
@@ -109,8 +110,10 @@ const APP: () = {
     #[task(priority = 2, resources = [lorawan, rcc], spawn = [lorawan_response])]
     fn lorawan_event(ctx: lorawan_event::Context, event: LorawanEvent<'static, LorawanRadio>) {
 
-        // Enable rng clock so lorawan can use the RNG peripheral
+        // Enable rng and aes clock so lorawan can use the RNG and AES peripherals
         Rng::enable_clock(ctx.resources.rcc);
+        Aes::enable_clock(ctx.resources.rcc);
+        unsafe { Aes::pulse_reset(ctx.resources.rcc); };
 
         // The LoraWAN stack is a giant state machine which needs to mutate internally
         // We let that happen within RTIC's framework for shared statics
