@@ -16,7 +16,7 @@ panic-probe = { version = "~0.2.0", features = ["print-defmt"] }
 
 [dependencies.stm32wl-hal]
 git = "https://github.com/munin-space/stm32wl-hal.git"
-branch = "improvement/remove_muts_aes"
+branch = "public"
 features = ["rt", "stm32wl5x_cm4", "defmt"]
 
 [dependencies.lorawan-device]

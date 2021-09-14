@@ -11,14 +11,7 @@ use panic_probe as _;
 
 use core::convert::TryFrom;
 
-use hal::{
-    aes::Aes,
-    cortex_m::prelude::_embedded_hal_timer_CountDown,
-    gpio::{PortA, PortC, RfNssDbg, SgMisoDbg, SgMosiDbg, SgSckDbg}, 
-    lptim::{LpTim, LpTim1}, 
-    pac as pac, 
-    rng::Rng,
-    spi::{SgMiso, SgMosi}, subghz::*};
+use hal::{aes::Aes, cortex_m::prelude::_embedded_hal_timer_CountDown, gpio::{PortA, PortC, RfNssDbg, SgMisoDbg, SgMosiDbg, SgSckDbg}, lptim::{LpTim, LpTim1}, pac as pac, rng::Rng, spi::{SgMiso, SgMosi}, subghz::*};
 
 use lorawan::{
     Event as LoraEvent,
@@ -44,6 +37,11 @@ fn get_random_u32() -> u32 {
     rng.try_u32().unwrap_or(0xFAFAFAFA) // Obviously don't ever do this in production
 }
 
+pub struct TimerContext {
+    pub tim: LpTim1,
+    pub timer_used: bool,
+}
+
 #[rtic::app(device = crate::pac, peripherals = true)]
 const APP: () = {
     struct Resources<'a> {
@@ -52,7 +50,7 @@ const APP: () = {
         #[init([0;256])]
         buffer_rx: [u8; 256],
         lorawan: Option<LorawanDevice<'static, LorawanRadio, Crypto>>,
-        lptim: LpTim1,
+        timer_context: TimerContext,
         rcc: pac::RCC,
     }
 
@@ -82,7 +80,7 @@ const APP: () = {
         // In this case we use LSI @ 32 KHz with Div32 Prescaler
         // That means 1 ms is 1 cycles
         let mut lptim: LpTim1 = LpTim1::new(dp.LPTIM1, hal::lptim::Clk::Lsi, hal::lptim::Prescaler::Div32, &mut dp.RCC);
-        lptim.set_ier(hal::lptim::irq::CMPM);
+        lptim.set_ier(hal::lptim::irq::ARRM);
 
         let _rng = Rng::new(dp.RNG, hal::rng::Clk::MSI, &mut dp.RCC);
 
@@ -102,7 +100,7 @@ const APP: () = {
                 get_random_u32,
                 ctx.resources.buffer_tx,
             )),
-            lptim,
+            timer_context: TimerContext { tim: lptim, timer_used: false },
             rcc: dp.RCC
         }
     }
@@ -231,32 +229,44 @@ const APP: () = {
         }
     }
 
-    #[task(resources=[lptim], priority = 3)]
+    #[task(resources=[timer_context], priority = 3)]
     fn set_timer(mut ctx: set_timer::Context, ms: u16) {
-            ctx.resources.lptim.lock(|lptim| {
-            
-            if hal::lptim::LpTim1::cnt() != 0 {
-                defmt::error!("Asking for Timer but it is already running, count: {}, asking: {}", hal::lptim::LpTim1::cnt(), ms);
+        ctx.resources.timer_context.lock(|timer_context| {
+            if (*timer_context).timer_used {
+                defmt::error!("Asking for Timer but it is already running, count: {}, asking: {}",  hal::lptim::LpTim1::cnt(), ms);
             } else {
+                (*timer_context).timer_used = true;
+                (*timer_context).tim.start(ms);
                 // The clock is set at 32 Khz with Div32 prescaler
                 // and the LPtim counts clock events, so 1 ms = 1 cycle
-                lptim.start(ms);
             }
         });
     }
 
-    #[task(binds=LPTIM1, priority = 4, resources=[lptim], spawn=[lorawan_event])]
-    fn timer_irq(ctx: timer_irq::Context) {
-        //defmt::debug!("LPTim interrupt triggered, ISR: {}", hal::lptim::LpTim1::isr());
-        unsafe { ctx.resources.lptim.set_icr(hal::lptim::irq::CMPM); }
-        ctx.spawn.lorawan_event(LorawanEvent::TimeoutFired).unwrap();
+    #[task(binds=LPTIM1, priority = 4, resources=[timer_context], spawn=[lorawan_event])]
+    fn timer_irq(mut ctx: timer_irq::Context) {
+        defmt::debug!("LPTim interrupt triggered, ISR: {}", hal::lptim::LpTim1::isr());
+        let mut timer_flag = false;
+        ctx.resources.timer_context.lock(|timer_context| {
+            if (LpTim1::isr() & hal::lptim::irq::ARRM) != 0 {
+                (*timer_context).timer_used = false;
+                timer_flag = true;
+                defmt::debug!("ARRM triggered");
+            }
+            unsafe { (*timer_context).tim.set_icr(hal::lptim::irq::ARRM); }
+        });
+        if timer_flag {
+            defmt::info!("Spawning lorawan_event TimeoutFired");
+            ctx.spawn.lorawan_event(LorawanEvent::TimeoutFired).unwrap();
+        }
     }
 
-    #[task(binds=RADIO_IRQ_BUSY, priority = 4, resources=[], spawn=[lorawan_event])]
+    #[task(binds=RADIO_IRQ_BUSY, priority = 5, resources=[timer_context], spawn=[lorawan_event])]
     fn radio_irq(ctx: radio_irq::Context) {
         let mut subghz = unsafe { hal::subghz::SubGhz::steal() };
         let (status, irq_status) = subghz.irq_status().unwrap();
         subghz.clear_irq_status(irq_status).unwrap();
+        ctx.resources.timer_context.timer_used = false;
         //defmt::debug!("Radio IRQ: {}", irq_status);
         ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status)))).unwrap();
     }
