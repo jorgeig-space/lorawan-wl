@@ -3,7 +3,7 @@ use core::{
     convert::TryInto,
 };
 
-use stm32wl_hal::aes::Aes;
+use stm32wl_hal::aes::{Aes};
 
 use cipher::{ BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher };
 use generic_array::{ GenericArray, typenum::* };
@@ -17,7 +17,8 @@ pub struct EncrypterDecrypter {
 
 impl EncrypterDecrypter {
     pub fn new(key: &[u8; 16]) -> EncrypterDecrypter {
-        let aes = unsafe { Aes::steal() };
+        let mut aes = unsafe { Aes::steal() };
+        aes.set_dataswap(stm32wl_hal::aes::SwapMode::BYTE);
         let key_u32: [u32; 4] = [
             u32::from_be_bytes(key[0..4].try_into().unwrap()),
             u32::from_be_bytes(key[4..8].try_into().unwrap()),
@@ -30,15 +31,31 @@ impl EncrypterDecrypter {
 
 impl Encrypter for EncrypterDecrypter {
     fn encrypt_block(&self, block: &mut GenericArray<u8, U16>) {
-        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
-        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+        let block_slice = block.as_mut_slice();
+        // `block` might not be u32 aligned, so we cannot just use `block.as_mut_slice.align_to_mut::<u32>()`
+        let mut cryptoblock: [u32; 4] = [
+            u32::from_le_bytes(block_slice[0..4].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[4..8].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[8..12].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[12..].try_into().unwrap()),
+        ];
+        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, &mut cryptoblock).unwrap();
+        block_slice.copy_from_slice(unsafe { &cryptoblock.align_to::<u8>().1 });
     }
 }
 
 impl Decrypter for EncrypterDecrypter {
     fn decrypt_block(&self, block: &mut GenericArray<u8, U16>) {
-        let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
-        self.aes.borrow_mut().decrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+        let block_slice = block.as_mut_slice();
+        // `block` might not be u32 aligned, so we cannot just use `block.as_mut_slice.align_to_mut::<u32>()`
+        let mut cryptoblock: [u32; 4] = [
+            u32::from_le_bytes(block_slice[0..4].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[4..8].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[8..12].try_into().unwrap()),
+            u32::from_le_bytes(block_slice[12..].try_into().unwrap()),
+        ];
+        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, &mut cryptoblock).unwrap();
+        block_slice.copy_from_slice(unsafe { &cryptoblock.align_to::<u8>().1 });
     }
 }
 
@@ -107,7 +124,8 @@ impl NewBlockCipher for AesWl {
     type KeySize = U16;
 
     fn new(key: &GenericArray<u8, U16>) -> Self {
-        let aes = unsafe { Aes::steal() };
+        let mut aes = unsafe { Aes::steal() };
+        aes.set_dataswap(stm32wl_hal::aes::SwapMode::BYTE);
         let key_u32: [u32; 4] = [
             u32::from_be_bytes(key[0..4].try_into().unwrap()),
             u32::from_be_bytes(key[4..8].try_into().unwrap()),

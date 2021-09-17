@@ -29,6 +29,17 @@ use lorawan_device::{
 
 use rfswitch::*;
 
+const FREQ: u32 = 4_000_000;
+const CYC_PER_US: u32 = FREQ / 1000 / 1000;
+const _CYC_PER_MS: u32 = FREQ / 1000;
+const _CYC_PER_SEC: u32 = FREQ;
+defmt::timestamp!("{=u32:µs}", pac::DWT::get_cycle_count() / CYC_PER_US);
+
+pub fn reset_cycle_count(_dwt: &mut pac::DWT) {
+    const DWT_CYCCNT: usize = 0xE0001004;
+    unsafe { core::ptr::write_volatile(DWT_CYCCNT as *mut u32, 0) };
+}
+
 /// Get a random u32 from the RNG peripheral
 /// WARNING: This function assumes that the RNG has been initialized and its clock is enabled
 /// Enable the RNG upon wakeup to use it for the whole session
@@ -57,6 +68,7 @@ const APP: () = {
     #[init(spawn = [lorawan_event], resources=[buffer_tx])]
     fn init(ctx: init::Context) -> init::LateResources {
         let mut dp: pac::Peripherals = ctx.device;
+        let mut cp: pac::CorePeripherals = ctx.core;
 
         defmt::info!("Init start");
 
@@ -89,19 +101,25 @@ const APP: () = {
             .unwrap();
 
         defmt::info!("Init complete");
+
+        cp.DCB.enable_trace();
+        cp.DWT.enable_cycle_counter();
+        reset_cycle_count(&mut cp.DWT);
+
         init::LateResources {
             lorawan: Some(LorawanDevice::new(
                 Configuration::new(Region::EU433),
                 lora_sg,
-                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xF4], 
+                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFE], 
                 [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01], 
-                [0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2,
-                0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2],
+                //[0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2,
+                //0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2],
+                [0,0,0,4,0,0,0,3,0,0,0,2,0,0,0,1],
                 get_random_u32,
                 ctx.resources.buffer_tx,
             )),
             timer_context: TimerContext { tim: lptim, timer_used: false },
-            rcc: dp.RCC
+            rcc: dp.RCC,
         }
     }
 
@@ -159,7 +177,12 @@ const APP: () = {
             Ok(response) => match response {
                 LorawanResponse::TimeoutRequest(ms) => {
                     defmt::info!("TimeoutRequest: {}", ms);
-                    ctx.spawn.set_timer(u16::try_from(ms).unwrap()).unwrap();
+                    ctx.spawn.set_timer(u16::try_from(ms).unwrap()).unwrap();   
+                    if ms>1000 {
+                        
+                        //ctx.spawn.lorawan_event(LorawanEvent::TimeoutFired).unwrap();
+                        //rtic::pend(pac::Interrupt::LPTIM1);
+                    }
                 }
                 LorawanResponse::JoinSuccess => {
                     if let Some(lorawan) = ctx.resources.lorawan.take() {
@@ -236,7 +259,7 @@ const APP: () = {
                 defmt::error!("Asking for Timer but it is already running, count: {}, asking: {}",  hal::lptim::LpTim1::cnt(), ms);
             } else {
                 (*timer_context).timer_used = true;
-                (*timer_context).tim.start(ms);
+                (*timer_context).tim.start(ms as u16);//ms);
                 // The clock is set at 32 Khz with Div32 prescaler
                 // and the LPtim counts clock events, so 1 ms = 1 cycle
             }
@@ -245,18 +268,20 @@ const APP: () = {
 
     #[task(binds=LPTIM1, priority = 4, resources=[timer_context], spawn=[lorawan_event])]
     fn timer_irq(mut ctx: timer_irq::Context) {
-        defmt::debug!("LPTim interrupt triggered, ISR: {}", hal::lptim::LpTim1::isr());
+        defmt::debug!("LPTim interrupt triggered, ISR: {}", LpTim1::isr());
+        
         let mut timer_flag = false;
         ctx.resources.timer_context.lock(|timer_context| {
             if (LpTim1::isr() & hal::lptim::irq::ARRM) != 0 {
-                (*timer_context).timer_used = false;
-                timer_flag = true;
-                defmt::debug!("ARRM triggered");
+                if (*timer_context).timer_used {
+                    (*timer_context).timer_used = false;
+                    timer_flag = true;
+                }
             }
             unsafe { (*timer_context).tim.set_icr(hal::lptim::irq::ARRM); }
         });
+
         if timer_flag {
-            defmt::info!("Spawning lorawan_event TimeoutFired");
             ctx.spawn.lorawan_event(LorawanEvent::TimeoutFired).unwrap();
         }
     }
@@ -266,9 +291,16 @@ const APP: () = {
         let mut subghz = unsafe { hal::subghz::SubGhz::steal() };
         let (status, irq_status) = subghz.irq_status().unwrap();
         subghz.clear_irq_status(irq_status).unwrap();
+
+        // Discard the current timer
+        // TODO: actually disable/reset it
         ctx.resources.timer_context.timer_used = false;
-        //defmt::debug!("Radio IRQ: {}", irq_status);
-        ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status)))).unwrap();
+
+        if irq_status & Irq::PreambleDetected.mask() != 0 {
+            ctx.resources.timer_context.timer_used = false;
+        } else {
+            ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status)))).unwrap();
+        }
     }
 
     extern "C" {
