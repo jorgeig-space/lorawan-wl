@@ -1,14 +1,11 @@
-use core::{
-    cell::RefCell,
-    convert::TryInto,
-};
+use core::{cell::RefCell, convert::TryInto};
 
-use stm32wl_hal::aes::{Aes};
+use stm32wl_hal::aes::Aes;
 
-use cipher::{ BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher };
-use generic_array::{ GenericArray, typenum::* };
-use lorawan_encoding::keys::{ AES128, CryptoFactory, Decrypter, Encrypter, Mac as LoraMac };
-use cmac::{ Cmac, NewMac, Mac };
+use cipher::{BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher};
+use cmac::{Cmac, Mac, NewMac};
+use generic_array::{typenum::*, GenericArray};
+use lorawan_encoding::keys::{CryptoFactory, Decrypter, Encrypter, Mac as LoraMac, AES128};
 
 pub struct EncrypterDecrypter {
     aes: RefCell<Aes>,
@@ -25,7 +22,10 @@ impl EncrypterDecrypter {
             u32::from_be_bytes(key[8..12].try_into().unwrap()),
             u32::from_be_bytes(key[12..].try_into().unwrap()),
         ];
-        EncrypterDecrypter { aes: RefCell::new(aes), key: key_u32 }
+        EncrypterDecrypter {
+            aes: RefCell::new(aes),
+            key: key_u32,
+        }
     }
 }
 
@@ -39,7 +39,10 @@ impl Encrypter for EncrypterDecrypter {
             u32::from_le_bytes(block_slice[8..12].try_into().unwrap()),
             u32::from_le_bytes(block_slice[12..].try_into().unwrap()),
         ];
-        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, &mut cryptoblock).unwrap();
+        self.aes
+            .borrow_mut()
+            .encrypt_ecb_inplace(&self.key, &mut cryptoblock)
+            .unwrap();
         block_slice.copy_from_slice(unsafe { &cryptoblock.align_to::<u8>().1 });
     }
 }
@@ -54,7 +57,10 @@ impl Decrypter for EncrypterDecrypter {
             u32::from_le_bytes(block_slice[8..12].try_into().unwrap()),
             u32::from_le_bytes(block_slice[12..].try_into().unwrap()),
         ];
-        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, &mut cryptoblock).unwrap();
+        self.aes
+            .borrow_mut()
+            .encrypt_ecb_inplace(&self.key, &mut cryptoblock)
+            .unwrap();
         block_slice.copy_from_slice(unsafe { &cryptoblock.align_to::<u8>().1 });
     }
 }
@@ -66,7 +72,7 @@ pub struct CmacWl {
 impl CmacWl {
     pub fn new(key: &[u8; 16]) -> CmacWl {
         let cmac = Cmac::<AesWl>::new_from_slice(key).unwrap();
-        CmacWl {cmac}
+        CmacWl { cmac }
     }
 }
 
@@ -97,14 +103,20 @@ impl BlockCipher for AesWl {
 impl BlockEncrypt for AesWl {
     fn encrypt_block(&self, block: &mut cipher::Block<Self>) {
         let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
-        self.aes.borrow_mut().encrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+        self.aes
+            .borrow_mut()
+            .encrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap())
+            .unwrap();
     }
 }
 
 impl BlockDecrypt for AesWl {
     fn decrypt_block(&self, block: &mut cipher::Block<Self>) {
         let (_, plaintext, _) = unsafe { block.as_mut_slice().align_to_mut::<u32>() };
-        self.aes.borrow_mut().decrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap()).unwrap();
+        self.aes
+            .borrow_mut()
+            .decrypt_ecb_inplace(&self.key, plaintext.try_into().unwrap())
+            .unwrap();
     }
 }
 
@@ -132,7 +144,10 @@ impl NewBlockCipher for AesWl {
             u32::from_be_bytes(key[8..12].try_into().unwrap()),
             u32::from_be_bytes(key[12..].try_into().unwrap()),
         ];
-        AesWl { aes: RefCell::new(aes), key: key_u32 }
+        AesWl {
+            aes: RefCell::new(aes),
+            key: key_u32,
+        }
     }
 }
 

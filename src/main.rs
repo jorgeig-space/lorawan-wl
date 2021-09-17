@@ -6,25 +6,27 @@ mod lorawan_crypto;
 mod rfswitch;
 
 use defmt_rtt as _;
-use stm32wl_hal as hal;
 use panic_probe as _;
+use stm32wl_hal as hal;
 
 use core::convert::TryFrom;
 
-use hal::{aes::Aes, cortex_m::prelude::_embedded_hal_timer_CountDown, gpio::{PortA, PortC, RfNssDbg, SgMisoDbg, SgMosiDbg, SgSckDbg}, lptim::{LpTim, LpTim1}, pac as pac, rng::Rng, spi::{SgMiso, SgMosi}, subghz::*};
-
-use lorawan::{
-    Event as LoraEvent,
-    LorawanRadio
+use hal::{
+    aes::Aes,
+    cortex_m::prelude::_embedded_hal_timer_CountDown,
+    gpio::{PortA, PortC, RfNssDbg, SgMisoDbg, SgMosiDbg, SgSckDbg},
+    lptim::{LpTim, LpTim1},
+    pac,
+    rng::Rng,
+    spi::{SgMiso, SgMosi},
+    subghz::*,
 };
+
+use lorawan::{Event as LoraEvent, LorawanRadio};
 use lorawan_crypto::LorawanCrypto as Crypto;
 use lorawan_device::{
-    Device as LorawanDevice, 
-    Error as LorawanError,
-    Event as LorawanEvent, 
-    radio,
-    region::Configuration, Region,
-    Response as LorawanResponse,
+    radio, region::Configuration, Device as LorawanDevice, Error as LorawanError,
+    Event as LorawanEvent, Region, Response as LorawanResponse,
 };
 
 use rfswitch::*;
@@ -86,12 +88,16 @@ const APP: () = {
 
         let lora_sg = lorawan::LorawanRadio::new(sg, rfs, false);
 
-        dp.RCC.csr.modify(|_,w| w
-            .lsion().on());
+        dp.RCC.csr.modify(|_, w| w.lsion().on());
         while dp.RCC.csr.read().lsirdy().is_not_ready() {}
         // In this case we use LSI @ 32 KHz with Div32 Prescaler
         // That means 1 ms is 1 cycles
-        let mut lptim: LpTim1 = LpTim1::new(dp.LPTIM1, hal::lptim::Clk::Lsi, hal::lptim::Prescaler::Div32, &mut dp.RCC);
+        let mut lptim: LpTim1 = LpTim1::new(
+            dp.LPTIM1,
+            hal::lptim::Clk::Lsi,
+            hal::lptim::Prescaler::Div32,
+            &mut dp.RCC,
+        );
         lptim.set_ier(hal::lptim::irq::ARRM);
 
         let _rng = Rng::new(dp.RNG, hal::rng::Clk::MSI, &mut dp.RCC);
@@ -110,26 +116,30 @@ const APP: () = {
             lorawan: Some(LorawanDevice::new(
                 Configuration::new(Region::EU433),
                 lora_sg,
-                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFE], 
-                [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01], 
+                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFE],
+                [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01],
                 //[0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2,
                 //0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2],
-                [0,0,0,4,0,0,0,3,0,0,0,2,0,0,0,1],
+                [0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 1],
                 get_random_u32,
                 ctx.resources.buffer_tx,
             )),
-            timer_context: TimerContext { tim: lptim, timer_used: false },
+            timer_context: TimerContext {
+                tim: lptim,
+                timer_used: false,
+            },
             rcc: dp.RCC,
         }
     }
 
     #[task(priority = 2, resources = [lorawan, rcc], spawn = [lorawan_response])]
     fn lorawan_event(ctx: lorawan_event::Context, event: LorawanEvent<'static, LorawanRadio>) {
-
         // Enable rng and aes clock so lorawan can use the RNG and AES peripherals
         Rng::enable_clock(ctx.resources.rcc);
         Aes::enable_clock(ctx.resources.rcc);
-        unsafe { Aes::pulse_reset(ctx.resources.rcc); };
+        unsafe {
+            Aes::pulse_reset(ctx.resources.rcc);
+        };
 
         // The LoraWAN stack is a giant state machine which needs to mutate internally
         // We let that happen within RTIC's framework for shared statics
@@ -141,7 +151,9 @@ const APP: () = {
                     defmt::info!("New Session Request");
                 }
                 LorawanEvent::RadioEvent(e) => match e {
-                    radio::Event::TxRequest(_, _) => defmt::info!("TxRequest in task `lorawan_event`"),
+                    radio::Event::TxRequest(_, _) => {
+                        defmt::info!("TxRequest in task `lorawan_event`")
+                    }
                     radio::Event::RxRequest(_) => defmt::info!("RxRequest in task `lorawan_event`"),
                     radio::Event::CancelRx => defmt::info!("CancelRx in task `lorawan_event`"),
                     radio::Event::PhyEvent(phy) => {
@@ -155,7 +167,7 @@ const APP: () = {
                 },
                 LorawanEvent::TimeoutFired => {
                     defmt::info!("TimeoutFired");
-                },
+                }
                 LorawanEvent::SendDataRequest(_e) => {
                     defmt::info!("SendData");
                 }
@@ -177,12 +189,7 @@ const APP: () = {
             Ok(response) => match response {
                 LorawanResponse::TimeoutRequest(ms) => {
                     defmt::info!("TimeoutRequest: {}", ms);
-                    ctx.spawn.set_timer(u16::try_from(ms).unwrap()).unwrap();   
-                    if ms>1000 {
-                        
-                        //ctx.spawn.lorawan_event(LorawanEvent::TimeoutFired).unwrap();
-                        //rtic::pend(pac::Interrupt::LPTIM1);
-                    }
+                    ctx.spawn.set_timer(u16::try_from(ms).unwrap()).unwrap();
                 }
                 LorawanResponse::JoinSuccess => {
                     if let Some(lorawan) = ctx.resources.lorawan.take() {
@@ -202,7 +209,11 @@ const APP: () = {
                             use lorawan_encoding::parser::{DataHeader, FRMPayload};
 
                             if let Ok(FRMPayload::Data(data)) = downlink.frm_payload() {
-                                defmt::info!("Downlink received (FCntDown={} FRM: {})", fcnt_down, data);
+                                defmt::info!(
+                                    "Downlink received (FCntDown={} FRM: {})",
+                                    fcnt_down,
+                                    data
+                                );
                             } else {
                                 defmt::info!("Downlink received (FcntDown={})", fcnt_down);
                             }
@@ -256,10 +267,14 @@ const APP: () = {
     fn set_timer(mut ctx: set_timer::Context, ms: u16) {
         ctx.resources.timer_context.lock(|timer_context| {
             if (*timer_context).timer_used {
-                defmt::error!("Asking for Timer but it is already running, count: {}, asking: {}",  hal::lptim::LpTim1::cnt(), ms);
+                defmt::error!(
+                    "Asking for Timer but it is already running, count: {}, asking: {}",
+                    hal::lptim::LpTim1::cnt(),
+                    ms
+                );
             } else {
                 (*timer_context).timer_used = true;
-                (*timer_context).tim.start(ms as u16);//ms);
+                (*timer_context).tim.start(ms);
                 // The clock is set at 32 Khz with Div32 prescaler
                 // and the LPtim counts clock events, so 1 ms = 1 cycle
             }
@@ -269,7 +284,7 @@ const APP: () = {
     #[task(binds=LPTIM1, priority = 4, resources=[timer_context], spawn=[lorawan_event])]
     fn timer_irq(mut ctx: timer_irq::Context) {
         defmt::debug!("LPTim interrupt triggered, ISR: {}", LpTim1::isr());
-        
+
         let mut timer_flag = false;
         ctx.resources.timer_context.lock(|timer_context| {
             if (LpTim1::isr() & hal::lptim::irq::ARRM) != 0 {
@@ -278,7 +293,9 @@ const APP: () = {
                     timer_flag = true;
                 }
             }
-            unsafe { (*timer_context).tim.set_icr(hal::lptim::irq::ARRM); }
+            unsafe {
+                (*timer_context).tim.set_icr(hal::lptim::irq::ARRM);
+            }
         });
 
         if timer_flag {
@@ -299,7 +316,11 @@ const APP: () = {
         if irq_status & Irq::PreambleDetected.mask() != 0 {
             ctx.resources.timer_context.timer_used = false;
         } else {
-            ctx.spawn.lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(LoraEvent::Irq(status, irq_status)))).unwrap();
+            ctx.spawn
+                .lorawan_event(LorawanEvent::RadioEvent(radio::Event::PhyEvent(
+                    LoraEvent::Irq(status, irq_status),
+                )))
+                .unwrap();
         }
     }
 
