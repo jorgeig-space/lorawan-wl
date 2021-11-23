@@ -1,6 +1,6 @@
 use core::{cell::RefCell, convert::TryInto};
 
-use stm32wl_hal::aes::Aes;
+use stm32wlxx_hal::aes::Aes;
 
 use cipher::{BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher};
 use cmac::{Cmac, Mac, NewMac};
@@ -15,7 +15,7 @@ pub struct EncrypterDecrypter {
 impl EncrypterDecrypter {
     pub fn new(key: &[u8; 16]) -> EncrypterDecrypter {
         let mut aes = unsafe { Aes::steal() };
-        aes.set_dataswap(stm32wl_hal::aes::SwapMode::BYTE);
+        aes.set_dataswap(stm32wlxx_hal::aes::SwapMode::BYTE);
         let key_u32: [u32; 4] = [
             u32::from_be_bytes(key[0..4].try_into().unwrap()),
             u32::from_be_bytes(key[4..8].try_into().unwrap()),
@@ -137,7 +137,7 @@ impl NewBlockCipher for AesWl {
 
     fn new(key: &GenericArray<u8, U16>) -> Self {
         let mut aes = unsafe { Aes::steal() };
-        aes.set_dataswap(stm32wl_hal::aes::SwapMode::BYTE);
+        aes.set_dataswap(stm32wlxx_hal::aes::SwapMode::BYTE);
         let key_u32: [u32; 4] = [
             u32::from_be_bytes(key[0..4].try_into().unwrap()),
             u32::from_be_bytes(key[4..8].try_into().unwrap()),

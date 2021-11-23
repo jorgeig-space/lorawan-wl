@@ -7,7 +7,7 @@ mod rfswitch;
 
 use defmt_rtt as _;
 use panic_probe as _;
-use stm32wl_hal as hal;
+use stm32wlxx_hal as hal;
 
 use core::convert::TryFrom;
 
@@ -26,7 +26,7 @@ use lorawan::{Event as LoraEvent, LorawanRadio};
 use lorawan_crypto::LorawanCrypto as Crypto;
 use lorawan_device::{
     radio, region::Configuration, Device as LorawanDevice, Error as LorawanError,
-    Event as LorawanEvent, Region, Response as LorawanResponse,
+    Event as LorawanEvent, JoinMode, Region, Response as LorawanResponse,
 };
 
 use rfswitch::*;
@@ -35,7 +35,8 @@ const FREQ: u32 = 4_000_000;
 const CYC_PER_US: u32 = FREQ / 1000 / 1000;
 const _CYC_PER_MS: u32 = FREQ / 1000;
 const _CYC_PER_SEC: u32 = FREQ;
-defmt::timestamp!("{=u32:µs}", pac::DWT::get_cycle_count() / CYC_PER_US);
+
+defmt::timestamp!("{=u32:us}", pac::DWT::get_cycle_count() / CYC_PER_US);
 
 pub fn reset_cycle_count(_dwt: &mut pac::DWT) {
     const DWT_CYCCNT: usize = 0xE0001004;
@@ -69,6 +70,7 @@ const APP: () = {
 
     #[init(spawn = [lorawan_event], resources=[buffer_tx])]
     fn init(ctx: init::Context) -> init::LateResources {
+        let cs = unsafe { &hal::cortex_m::interrupt::CriticalSection::new() };
         let mut dp: pac::Peripherals = ctx.device;
         let mut cp: pac::CorePeripherals = ctx.core;
 
@@ -76,15 +78,15 @@ const APP: () = {
 
         let gpioa: PortA = PortA::split(dp.GPIOA, &mut dp.RCC);
         let gpioc: PortC = PortC::split(dp.GPIOC, &mut dp.RCC);
-        let mut rfs: RfSwitch = RfSwitch::new(gpioc.c3, gpioc.c4, gpioc.c5);
+        let mut rfs: RfSwitch = RfSwitch::new(gpioc.c3, gpioc.c4, gpioc.c5, cs);
         rfs.set_rx();
 
         let sg: SubGhz<SgMiso, SgMosi> = SubGhz::new(dp.SPI3, &mut dp.RCC);
         // For future use
-        let _: RfNssDbg = RfNssDbg::new(gpioa.a4);
-        let _: SgSckDbg = SgSckDbg::new(gpioa.a5);
-        let _: SgMisoDbg = SgMisoDbg::new(gpioa.a6);
-        let _: SgMosiDbg = SgMosiDbg::new(gpioa.a7);
+        let _: RfNssDbg = RfNssDbg::new(gpioa.a4, cs);
+        let _: SgSckDbg = SgSckDbg::new(gpioa.a5, cs);
+        let _: SgMisoDbg = SgMisoDbg::new(gpioa.a6, cs);
+        let _: SgMosiDbg = SgMosiDbg::new(gpioa.a7, cs);
 
         let lora_sg = lorawan::LorawanRadio::new(sg, rfs, false);
 
@@ -115,12 +117,14 @@ const APP: () = {
         init::LateResources {
             lorawan: Some(LorawanDevice::new(
                 Configuration::new(Region::EU433),
+                JoinMode::OTAA {
+                    deveui: [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFE],
+                    appeui: [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01],
+                    appkey: [0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 1],
+                },
                 lora_sg,
-                [0xE4, 0xE3, 0xE2, 0xE1, 0xF5, 0xF4, 0xF3, 0xFE],
-                [0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01],
                 //[0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2,
                 //0xA9, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3, 0xA2],
-                [0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 1],
                 get_random_u32,
                 ctx.resources.buffer_tx,
             )),
@@ -144,7 +148,7 @@ const APP: () = {
         // The LoraWAN stack is a giant state machine which needs to mutate internally
         // We let that happen within RTIC's framework for shared statics
         // by using an Option cell that we can take() from
-        if let Some(lorawan) = ctx.resources.lorawan.take() {
+        if let Some(mut lorawan) = ctx.resources.lorawan.take() {
             // debug statements for the event
             match &event {
                 LorawanEvent::NewSessionRequest => {
@@ -172,11 +176,8 @@ const APP: () = {
                     defmt::info!("SendData");
                 }
             }
-            let (new_state, response) = lorawan.handle_event(event);
+            let response = lorawan.handle_event(event);
             ctx.spawn.lorawan_response(response).unwrap();
-
-            // placing back into the Option cell after taking is critical
-            ctx.resources.lorawan.replace(new_state);
         }
     }
 
