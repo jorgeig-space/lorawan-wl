@@ -8,7 +8,7 @@ use lorawan_device::{
     },
     Timings,
 };
-use stm32wl_hal::{
+use stm32wlxx_hal::{
     spi::{SgMiso, SgMosi},
     subghz::*,
 };
